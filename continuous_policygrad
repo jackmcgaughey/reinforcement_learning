@@ -107,6 +107,7 @@ if __name__ == "__main__":
         score = 0 
         while done is False:
             action = np.array(agent.sample_move(state)[1]).reshape((1))
+            new_state, reward, done, _ = env.step(action=action)
             agent.update_params(state, reward, new_state, done)
             state = torch.tensor(new_state, dtype=torch.float)
             score += reward
