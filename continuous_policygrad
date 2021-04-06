@@ -1,0 +1,113 @@
+##continuous action space. 2 nerual networks approximators
+#specifically designed for continuous mountian climber
+import torch 
+import torch.nn as nn 
+import torch.nn.functional as F
+import torch.optim as optim
+import numpy as np
+
+class ActorNet(nn.Module):
+    def __init__(self, obs_dims, actor_hl1, actor_hl2, lr1,
+                action_dims = 2):
+        super(ActorNet, self).__init__()
+        self.obs_dims = obs_dims
+        self.action_dims = action_dims #standard deviation and mean
+        self.actor_hl1 = actor_hl1
+        self.actor_hl2 = actor_hl2
+        self.lr1 = lr1
+        
+        self.policy = nn.Sequential(
+                nn.Linear(*obs_dims, actor_hl1), # * unpacks a tuple
+                nn.ReLU(),
+                nn.Linear(actor_hl1, actor_hl2),
+                nn.ReLU(),
+                nn.Linear(actor_hl2, action_dims)
+        )       
+        
+        self.optimizer = optim.Adam(self.parameters(), lr = self.lr1)
+        self.device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+        self.to(self.device)
+
+    def forward(self, x):
+        x_ = torch.tensor(x, dtype=torch.float).to(self.device)
+        mean, variance = self.policy(x_)
+        return mean, variacne #how can a variance be negative?
+
+class CriticNet(nn.Module):
+    def __init__(self, obs_dims, critic_hl1,
+                critic_hl2, lr2, output_dims):
+        super(CriticNet, self).__init__()
+        self.obs_dims = obs_dims
+        self.output_dims = output_dims #will be one bc value
+        self.critic_hl1 = critic_hl1
+        self.critic_hl2 = critic_hl2
+        self.lr2 = lr2 
+       
+        self.value_net = nn.Sequential(
+                nn.Linear(*obs_dims, critic_hl1),
+                nn.ReLU(),
+                nn.Linear(critic_hl1, critic_hl2),
+                nn.ReLU(),
+                nn.Linear(critic_hl2, output_dims)
+        ) 
+        
+        self.optimizer = optim.Adam(self.parameters(), lr=self.lr2)
+        self.device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+        self.to(self.device)
+     
+
+    def forward(self, x):
+        x_ = torch.tensor(x, dtype=torch.float).to(self.device)
+        value = self.value_net(x_)
+        return value
+
+class Agent(object):
+    def __init__(self, obs_dims, lr1, lr2, hl_size = 256, discount_rate=0.99):
+        self.actor = ActorNet(obs_dims, hl_size, hl_size, lr1, action_dims=2)
+        self.critic = CriticNet(obs_dims, hl_size, hl_size, lr2, output_dims=1)
+        self.discount = discount_rate
+    
+    def sample_move(self, obs):
+        μ, σ = self.actor.policy(obs)
+        μ, σ = μ, torch.exp(σ)
+        prob_dist = torch.distributions.Normal(μ, σ)
+        action = prob_dist.sample()
+        logp = prob_dist.log_prob(action).to(self.actor.device)
+        action = torch.tanh(action)
+        return logp, action.item()
+
+    def update_params(self, state, reward, state_, done):
+        self.actor.optimizer.zero_grad()
+        self.critic.optimizer.zero_grad()
+
+        value_state = self.critic.forward(state)
+        next_value_state = self.critic.forward(state_)
+        #print(value_state.requires_grad_)
+        δ = (torch.tensor(reward, dtype=torch.float).to(self.critic.device)) + ((self.discount*(next_value_state)) if done == False else 0) - value_state
+        loss_for_actor = -(self.sample_move(state)[0])+ δ  ##important thing here is that delta can be positive or negative
+        loss_for_critic = δ ** 2  #measurement of distance, we are trying to get the values as close as possible to eachother.
+        #print(next_value_state.grad)
+        #print(loss_for_actor.grad)
+        #print(δ)
+        (loss_for_actor + loss_for_critic).backward()
+
+        self.actor.optimizer.step()
+        self.critic.optimizer.step()
+
+if __name__ == "__main__":
+    env = gym.make('MountainCarContinuous-v0')
+    episodes = 75
+    agent = Agent(obs_dims=[2], lr1= 0.000005, lr2 = 0.00001)
+    score_for_episode = [] 
+    for i in range(episodes):
+        print(i, (score_for_episode[-1] if i > 0 else None))
+        state = env.reset()
+        state = torch.tensor(state, dtype=torch.float)
+        done = False
+        score = 0 
+        while done is False:
+            action = np.array(agent.sample_move(state)[1]).reshape((1))
+            agent.update_params(state, reward, new_state, done)
+            state = torch.tensor(new_state, dtype=torch.float)
+            score += reward
+        score_for_episode.append(score)
